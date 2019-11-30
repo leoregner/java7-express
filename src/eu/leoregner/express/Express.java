@@ -1,9 +1,7 @@
 package eu.leoregner.express;
 import java.io.*;
-import java.text.SimpleDateFormat;
 import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.regex.*;
 import com.sun.net.httpserver.*;
 
 /** Java implementation analogously to the Node.js express server
@@ -26,7 +24,7 @@ public class Express
 	}
 	
 	/** starts the server listening to the specified port */
-	public Express(int port) throws Exception
+	public Express(int port) throws IOException
 	{
 		this("0.0.0.0", port);
 	}
@@ -108,6 +106,7 @@ public class Express
 			this.e = e;
 		}
 		
+		/** @return the request body as a string */
 		public String body()
 		{
 			if(request != null)
@@ -130,9 +129,26 @@ public class Express
 			}
 		}
 		
-		public String getSessionUserName()
+		/** @return the value of the cookie with the specified name */
+		public String cookie(String name)
 		{
-			return System.getProperty("user.name");
+			try
+			{
+				for(String header : getHeader("Cookie"))
+					for(String cookie : header.split(";"))
+						try
+						{
+							String key = cookie.split("=")[0];
+							String value = java.net.URLDecoder.decode(cookie.substring(name.length() + 1), "UTF-8");
+							
+							if(key.equals(name))
+								return java.net.URLDecoder.decode(value, "UTF-8");
+						}
+						catch(UnsupportedEncodingException x) {}
+			}
+			catch(NullPointerException x) {}
+			
+			return null;
 		}
 		
 		private void setParam(String key, String value)
@@ -140,11 +156,13 @@ public class Express
 			params.put(key, value);
 		}
 		
+		/** @return the value of the URI parameter with the specified placeholder name */
 		public String getParam(String key)
 		{
 			return params.get(key);
 		}
 		
+		/** @return all request headers with the specified key */
 		public List<String> getHeader(String key)
 		{
 			return e.getRequestHeaders().get(key);
@@ -162,81 +180,55 @@ public class Express
 			this.e = e;
 		}
 		
-		public void set(String headerKey, String headerValue)
+		/** sets a HTTP header field */
+		public Response set(String headerKey, String headerValue)
 		{
 			e.getResponseHeaders().add(headerKey, headerValue);
+			return this;
 		}
 		
+		/** sets the HTTP response status code */
 		public Response status(int statusCode)
 		{
 			this.statusCode = statusCode;
 			return this;
 		}
 		
-		public static interface JsonObjectifyable
+		/** sets a cookie */
+		public Response cookie(String name, String value)
 		{
-			Map<String, ?> toJsonObject();
+			return this.cookie(name, value, null);
 		}
 		
-		private static final String stringifyJson(Object object)
+		/** sets a cookie with the specified semicolon-separated attributes */
+		public Response cookie(String name, String value, String attributes)
 		{
-			final StringBuffer string = new StringBuffer();
+			try
+			{
+				value = java.net.URLEncoder.encode(value, "UTF-8");
+				attributes = (attributes == null) ? new String() : (";" + attributes);
+				set("Set-Cookie", name + "=" + value + attributes);
+			}
+			catch(UnsupportedEncodingException x) {}
 			
-			if(object == null)
-			{
-				string.append("null");
-			}
-			else if(object instanceof JsonObjectifyable)
-			{
-				final Map<String, ?> keyValuePairs = ((JsonObjectifyable) object).toJsonObject();
-				string.append(stringifyJson(keyValuePairs));
-			}
-			else if(object instanceof Map)
-			{
-				string.append("{");
-				for(Object key : ((Map<?, ?>) object).keySet())
-					string.append(stringifyJson(key)).append(":").append(stringifyJson(((Map<?, ?>) object).get(key))).append(",");
-				if(((Map<?, ?>) object).size() > 0)
-					string.deleteCharAt(string.length() - 1);
-				string.append("}");
-			}
-			else if(object instanceof List)
-			{
-				string.append("[");
-				for(Object item : (List<?>) object)
-					string.append(stringifyJson(item)).append(",");
-				if(((List<?>) object).size() > 0)
-					string.deleteCharAt(string.length() - 1);
-				string.append("]");
-			}
-			else if(object instanceof String)
-			{
-				string.append("\"");
-				string.append(object.toString().replace("\"", "\\\"").replace("\r", "\\r").replace("\n", "\\n"));
-				string.append("\"");
-			}
-			else if(object instanceof Date)
-			{
-				final SimpleDateFormat timestampFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ");
-				string.append("\"").append(timestampFormat.format((Date) object)).append("\"");
-			}
-			else string.append(stringifyJson(object.toString()));
-			
-			return string.toString();
+			return this;
 		}
 		
+		/** sends the specified object as JSON string response */
 		public void send(Object body) throws IOException
 		{
 			this.set("Content-Type", "application/json; charset=UTF-8");
-			this.send(stringifyJson(body).getBytes("UTF-8"));
+			this.send(JSON.stringify(body).getBytes("UTF-8"));
 		}
 		
+		/** sends the specified string as plain text response */
 		public void send(String body) throws IOException
 		{
 			this.set("Content-Type", "text/plain; charset=UTF-8");
 			this.send(body.getBytes("UTF-8"));
 		}
 		
+		/** sends the specified bytes as response */
 		public void send(byte[] body) throws IOException
 		{
 			e.sendResponseHeaders(statusCode, body.length);
@@ -282,8 +274,10 @@ public class Express
 			if(e.getRequestMethod().equals("GET") && rootDirectory != null)
 			{
 				File requestedFile = new File(rootDirectory, e.getRequestURI().getPath().substring(1));
+				
 				if(requestedFile.exists() && requestedFile.isDirectory())
 					requestedFile = new File(requestedFile, "index.html");
+				
 				if(requestedFile.exists() && requestedFile.isFile() && requestedFile.canRead())
 				{
 					e.getResponseHeaders().set("Content-Type", getMimeType(requestedFile));
@@ -317,7 +311,7 @@ public class Express
 					String pattern = "";
 					final List<String> params = new ArrayList<String>();
 					
-					final Matcher matcher = Pattern.compile("\\:[a-zA-Z0-9_]*").matcher(uri);
+					final Matcher matcher = Pattern.compile("\\:[a-zA-Z0-9_]+").matcher(uri);
 					while(matcher.find())
 					{
 						params.add(matcher.group().substring(1));
@@ -331,8 +325,9 @@ public class Express
 						final Request req = new Request(e);
 						
 						final Matcher patternMatcher = Pattern.compile(pattern).matcher(e.getRequestURI().getPath());
-						for(int i = 0; patternMatcher.find() && i < params.size(); ++i)
-							req.setParam(params.get(i), patternMatcher.group(i + 1));
+						while(patternMatcher.find())
+							for(int i = 0; i < patternMatcher.groupCount(); ++i)
+								req.setParam(params.get(i), patternMatcher.group(i + 1));
 						
 						handlers.get(uri).handle(req, new Response(e));
 						return;
