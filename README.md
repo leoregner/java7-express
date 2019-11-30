@@ -23,6 +23,7 @@ Using Maven:
 Example:
 
 ```java
+import eu.leoregner.express.Express;
 import eu.leoregner.express.Express.*;
 
 public class Test
