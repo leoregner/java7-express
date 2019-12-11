@@ -48,7 +48,7 @@ public class JSON
 		else if(object instanceof String)
 		{
 			string.append("\"");
-			string.append(object.toString().replace("\"", "\\\"").replace("\r", "\\r").replace("\n", "\\n").replace("\\", "\\\\"));
+			string.append(object.toString().replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", "\\r").replace("\n", "\\n"));
 			string.append("\"");
 		}
 		
