@@ -2,6 +2,7 @@ package eu.leoregner.express;
 import java.io.*;
 import java.util.*;
 import java.util.regex.*;
+import java.net.URLDecoder;
 import com.sun.net.httpserver.*;
 
 /** Java implementation analogously to the Node.js express server
@@ -98,8 +99,9 @@ public class Express
 	public static class Request
 	{
 		private final HttpExchange e;
-		private String request = null;
-		private final Map<String, String> params = new HashMap<String, String>();
+		private ByteArrayOutputStream request = null;
+		private final Map<String, UploadedFile> uploads = new HashMap<String, UploadedFile>();
+		private final Map<String, String> params = new HashMap<String, String>(), formData = new HashMap<String, String>();
 		
 		private Request(HttpExchange e)
 		{
@@ -109,24 +111,129 @@ public class Express
 		/** @return the request body as a string */
 		public String body()
 		{
-			if(request != null)
-				return request;
+			if(request == null)
+			{
+				try
+				{
+					int read;
+					byte[] buffer = new byte[1024];
+					final ByteArrayOutputStream requestBuffer = new ByteArrayOutputStream();
+					
+					final InputStream reader = e.getRequestBody();
+					while((read = reader.read(buffer)) > -1)
+						requestBuffer.write(buffer, 0, read);
+					reader.close();
+					
+					this.request = requestBuffer;
+				}
+				catch(IOException x)
+				{
+					x.printStackTrace();
+					return new String();
+				}
+				
+				try
+				{
+					// parse form data
+					if(getHeader("content-type").get(0).toLowerCase().contains("application/x-www-form-urlencoded"))
+						for(String pair : new String(this.request.toByteArray(), "UTF-8").trim().split("&"))
+						{
+							String key = pair.contains("=") ? pair.split("=")[0] : pair, charset = "ISO-8859-1";
+							String value = pair.length() > key.length() ? URLDecoder.decode(pair.substring(key.length() + 1), charset) : "";
+							formData.put(key, value);
+						}
+					
+					// parse multipart data
+					else if(getHeader("content-type").get(0).toLowerCase().contains("multipart/form-data"))
+					{
+						String contentType = getHeader("content-type").get(0);
+						String data = new String(this.request.toByteArray(), "ASCII");
+						String boundary = "--" + contentType.substring(contentType.toLowerCase().indexOf("boundary=") + 9);
+						String[] parts = data.split(Pattern.quote(boundary));
+						
+						for(int start = 0, i = 0; i < parts.length; ++i)
+						{
+							int end = start + parts[i].length();
+							int innerStart = i > 0 ? start + 2 : start, innerEnd = i > 0 ? end - 2 : end, bodyStart = innerStart;
+							
+							// extract header of part
+							String[] headers = new String[0];
+							String part = data.substring(innerStart, innerEnd);
+							if(part.contains("\r\n\r\n"))
+							{
+								headers = part.split("\r\n\r\n")[0].split("\r\n");
+								bodyStart += part.indexOf("\r\n\r\n") + 4;
+							}
+							
+							// extract binary body of part
+							byte[] partBody = Arrays.copyOfRange(this.request.toByteArray(), bodyStart, innerEnd);
+							
+							// store uploaded files and process form data
+							for(String header : headers)
+								if(header.toLowerCase().contains("content-disposition") && !header.toLowerCase().contains("filename"))
+								{
+									String name = extractFromHeader(header, "name");
+									formData.put(name, new String(partBody, "ISO-8859-1"));
+								}
+								else
+								{
+									String name = extractFromHeader(header, "name");
+									String fileName = extractFromHeader(header, "filename");
+									uploads.put(name, new UploadedFile(fileName, partBody));
+								}
+							
+							start = end + boundary.length();
+						}
+					}
+				}
+				catch(Throwable x)
+				{
+					x.printStackTrace();
+				}
+			}
 			
-			try
-			{
-				String line;
-				final StringBuffer requestBuffer = new StringBuffer();
-				final BufferedReader reader = new BufferedReader(new InputStreamReader(e.getRequestBody()));
-				while((line = reader.readLine()) != null)
-					requestBuffer.append(line).append("\r\n");
-				reader.close();
-				return this.request = requestBuffer.toString();
-			}
-			catch(IOException x)
-			{
-				x.printStackTrace();
-				return new String();
-			}
+			// return value is the full request body as string if interpreted using UTF-8
+			try { return new String(request.toByteArray(), "UTF-8"); }
+			catch(UnsupportedEncodingException x) { return null; }
+		}
+		
+		/** @return the argument value of the specified key within the specified HTTP header */
+		private static final String extractFromHeader(String header, String key)
+		{
+			int start = header.indexOf(key + "=\"");
+			
+			if(start == -1)
+				return null;
+			
+			String value = header.substring(start + key.length() + 2);
+			int end = value.length();
+			
+			if(value.length() > 0)
+				if(value.charAt(0) == '\"')
+					end = 0;
+				else
+				{
+					final java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("[^\\\\]\\\"").matcher(value);
+					if(matcher.find())
+						end = matcher.start();
+					++end;
+				}
+			
+			return value.substring(0, end);
+		}
+		
+		/** @return the post form data value with the specified key */
+		public String data(String key)
+		{
+			body();
+			return formData.get(key);
+		}
+		
+		/** @return the uploaded file with the specified key */
+		public UploadedFile file(String key)
+		{
+			body();
+			return uploads.get(key);
 		}
 		
 		/** @return the value of the cookie with the specified name */
@@ -174,6 +281,7 @@ public class Express
 	{
 		private final HttpExchange e;
 		private int statusCode = 200;
+		public boolean doNotCloseConnection = false;
 		
 		private Response(HttpExchange e)
 		{
@@ -232,9 +340,51 @@ public class Express
 		public void send(byte[] body) throws IOException
 		{
 			e.sendResponseHeaders(statusCode, body.length);
-			e.getResponseBody().write(body);
-			e.getResponseBody().flush();
+			
+			final OutputStream responseBody = e.getResponseBody();
+			responseBody.write(body);
+			responseBody.flush();
+			responseBody.close();
 			e.close();
+		}
+	}
+	
+	public static class UploadedFile
+	{
+		private final String fileName;
+		private final byte[] data;
+		
+		private UploadedFile(String name, byte[] data)
+		{
+			this.fileName = name;
+			this.data = data;
+		}
+		
+		/** @return the original file name */
+		public String getFileName()
+		{
+			return fileName;
+		}
+		
+		/** writes the uploaded file into a temporary file on the disk */
+		public File tmp() throws IOException
+		{
+			String niceName = fileName.contains(".") ? fileName.substring(0, fileName.lastIndexOf(".")) : fileName;
+			String extension = fileName.contains(".") ? fileName.substring(fileName.lastIndexOf(".")) : new String();
+			
+			final File tmp = File.createTempFile(niceName, extension);
+			tmp.deleteOnExit();
+			mv(tmp);
+			return tmp;
+		}
+		
+		/** writes the uploaded file into a file at the specified location */
+		public void mv(File file) throws IOException
+		{
+			final OutputStream writer = new FileOutputStream(file);
+			writer.write(data);
+			writer.flush();
+			writer.close();
 		}
 	}
 	
@@ -279,20 +429,27 @@ public class Express
 					requestedFile = new File(requestedFile, "index.html");
 				
 				if(requestedFile.exists() && requestedFile.isFile() && requestedFile.canRead())
-				{
-					e.getResponseHeaders().set("Content-Type", getMimeType(requestedFile));
-					e.sendResponseHeaders(200, requestedFile.length());
-					
-					int read;
-					byte[] buffer = new byte[1024];
-					final InputStream in = new FileInputStream(requestedFile);
-					while((read = in.read(buffer)) > -1)
-						e.getResponseBody().write(buffer, 0, read);
-					e.getResponseBody().flush();
-					in.close();
-					e.close();
-					return;
-				}
+					try
+					{
+						e.getResponseHeaders().set("Content-Type", getMimeType(requestedFile));
+						e.sendResponseHeaders(200, requestedFile.length());
+						
+						int read;
+						byte[] buffer = new byte[1024];
+						final InputStream in = new FileInputStream(requestedFile);
+						while((read = in.read(buffer)) > -1)
+							e.getResponseBody().write(buffer, 0, read);
+						e.getResponseBody().flush();
+						in.close();
+						e.close();
+						return;
+					}
+					catch(Throwable x)
+					{
+						x.printStackTrace();
+						e.close();
+						return;
+					}
 			}
 			
 			// match request with end point patterns
@@ -329,7 +486,10 @@ public class Express
 							for(int i = 0; i < patternMatcher.groupCount(); ++i)
 								req.setParam(params.get(i), patternMatcher.group(i + 1));
 						
-						handlers.get(uri).handle(req, new Response(e));
+						final Response res = new Response(e);
+						handlers.get(uri).handle(req, res);
+						if(!res.doNotCloseConnection)
+							e.close();
 						return;
 					}
 				}
