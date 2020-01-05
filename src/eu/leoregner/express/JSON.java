@@ -48,7 +48,7 @@ public class JSON
 		else if(object instanceof String)
 		{
 			string.append("\"");
-			string.append(object.toString().replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", "\\r").replace("\n", "\\n"));
+			string.append(escapeString(object.toString()));
 			string.append("\"");
 		}
 		
@@ -61,5 +61,23 @@ public class JSON
 		else string.append(stringify(object.toString()));
 		
 		return string.toString();
+	}
+	
+	/** JSON-escapes special characters in the specified string */
+	private static String escapeString(String in)
+	{
+		// @see https://stackoverflow.com/questions/18898773/java-escape-json-string
+		in = in.replace("\\", "\\\\").replace("\"", "\\\"").replace("\r", "\\r").replace("\n", "\\n");
+		in = in.replace("\t", "\\t").replace("\f", "\\f").replace("\b", "\\b");
+		
+		// @see https://stackoverflow.com/questions/28176578/convert-utf-8-unicode-string-to-ascii-unicode-escaped-string
+		final StringBuilder out = new StringBuilder();
+		for(int i = 0; i < in.length(); ++i)
+		{
+			final char ch = in.charAt(i);
+			if(ch <= 127) out.append(ch);
+			else out.append("\\u").append(String.format("%04x", (int) ch));
+		}
+		return out.toString();
 	}
 }
