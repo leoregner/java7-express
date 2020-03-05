@@ -245,6 +245,7 @@ public class Express
 					for(String cookie : header.split(";"))
 						try
 						{
+							cookie = cookie.trim();
 							String key = cookie.split("=")[0];
 							String value = java.net.URLDecoder.decode(cookie.substring(name.length() + 1), "UTF-8");
 							
